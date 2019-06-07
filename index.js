@@ -1,7 +1,7 @@
 /**
- * PixelNode_Driver_PixelPusher
+ * PixelNode_Driver_DMX
  * 
- * Pixel Driver for PixelPusher
+ * Pixel Driver for DMX
  * 
  * --------------------------------------------------------------------------------------------------------------------
  * 
@@ -13,7 +13,7 @@
 /* Includes
  * ==================================================================================================================== */
 
-var PixelPusher = require('pixelpusher');
+var dmxlib = new require('dmxnet');
 var util = require("util");
 var colors = require('colors');
 
@@ -25,122 +25,78 @@ var colors = require('colors');
 PixelNode_Driver = require('pixelnode-driver');
 
 // define the Student class
-function PixelNode_Driver_PixelPusher(options,pixelData) {
+function PixelNode_Driver_DMX(options,pixelData) {
   var self = this;
-  PixelNode_Driver_PixelPusher.super_.call(self, options, pixelData);
-  this.className = "PixelNode_Driver_PixelPusher";
+  PixelNode_Driver_DMX.super_.call(self, options, pixelData);
+  this.className = "PixelNode_Driver_DMX";
 }
 
 // class inheritance 
-util.inherits(PixelNode_Driver_PixelPusher, PixelNode_Driver);
+util.inherits(PixelNode_Driver_DMX, PixelNode_Driver);
 
 // module export
-module.exports = PixelNode_Driver_PixelPusher;
+module.exports = PixelNode_Driver_DMX;
 
 
 /* Variables
  * ==================================================================================================================== */
 
-PixelNode_Driver_PixelPusher.prototype.default_options = {
+PixelNode_Driver_DMX.prototype.default_options = {
+	pixelColorCorrection: false,
+	offset: true,
 	dimmer: 1,
-	gammapow: 2.3
+	ip: '192.168.3.20',
+	startUniverse: 0,
+	universes: 16
 };
-PixelNode_Driver_PixelPusher.prototype.controller = {};
-PixelNode_Driver_PixelPusher.prototype.strips = [];
-PixelNode_Driver_PixelPusher.prototype.gammatable = [];
+PixelNode_Driver_DMX.prototype.sender = [];
 
 
 /* Overriden Methods
  * ==================================================================================================================== */
 
  // init driver
-PixelNode_Driver_PixelPusher.prototype.init = function() {
+PixelNode_Driver_DMX.prototype.init = function() {
 	var self = this;
-	console.log("Init PixelDriver PixelPusher".grey);
+	console.log("Init PixelDriver DMX at".grey, this.options.ip);
 
-	// init gamma table for color correction	
-	self.initGammaTable();
-
-	// initialize PixelPusher
-	new PixelPusher().on('discover', function(controller) {
-		// remember controller
-		self.controller = controller;
-
-		// PixelPusher discovered
-		console.log('PixelPusher discovered: '.green + JSON.stringify(controller.params.pixelpusher).grey);
-		
-		// add strips (no logic for multiple pixelpushers yet)
-		for (var i = 0; i < controller.params.pixelpusher.numberStrips; i++) {
-			self.strips.push({ number:i, data: new Buffer(3 * self.controller.params.pixelpusher.pixelsPerStrip) });
-		}
-
-		// start the painter 
-		self.startPainter.call(self);
-
-		// on timeout
-		self.controller.on('timeout', function() {
-			console.log('PixelPusher timeout'.red);
-			self.strips = [];
+	// Create new dmxnet instance
+	this.dmxnet = new dmxlib.dmxnet({
+	  verbose: 0,
+	});
+	
+	for (var i = this.options.startUniverse; i < this.options.universes; i++) {
+		console.log("Init PixelDriver DMX universe".grey, i);
+		// Create new Sender instance
+		var sender = this.dmxnet.newSender({
+		  ip: this.options.ip,
+		  subnet: 0,
+		  universe: i,
+		  net: 0,
 		});
+		this.sender[i] = sender;
+	}
 
 
-
-	}).on('error', function(err) {
-		console.log(('PixelPusher Error: ' + err.message).red);
-	});  
-
+	// start painter on connect
+		self.startPainter.call(self);
 
 };
 
-
-// set's a pixel via PixelPusher 
-PixelNode_Driver_PixelPusher.prototype.setPixel = function(strip_num, id, r,g,b) {
-	var self = this;
-	if (strip_num < self.strips.length && id < self.controller.params.pixelpusher.pixelsPerStrip) {
-		// get strip
-		var strip = self.strips[strip_num];
-
-		// set pixel data 
-		// - each data point one RGB value
-		// - gammatable for color correction
-		// - dimmer for general darkening (power save)
-
-		strip.data[id*3] =   self.gammatable[	parseInt(r * self.options.dimmer)	];
-		strip.data[id*3+1] = self.gammatable[	parseInt(g * self.options.dimmer)	];
-		strip.data[id*3+2] = self.gammatable[	parseInt(b * self.options.dimmer)	];
+// set's a pixel via DMX client
+PixelNode_Driver_DMX.prototype.setPixel = function(universe, id, r,g,b) {
+	if (this.sender[universe] && this.sender[universe].socket_ready && id*3 +2 < 512) {
+		this.sender[universe].prepChannel(id * 3 + 0, r * this.options.dimmer);
+		this.sender[universe].prepChannel(id * 3 + 1, g * this.options.dimmer);
+		this.sender[universe].prepChannel(id * 3 + 2, b * this.options.dimmer);
 	}
 }
 
-
-// tells PixelPusher to write pixels
-PixelNode_Driver_PixelPusher.prototype.sendPixels = function() {
-	var self = this;
-
-	// send each strip on its own to prevent to big udp-packagesize
-	self.strips.forEach(function(strip) {
-		self.controller.refresh([strip]);	
-	});
-}
-
-
-
-/* Methods
- * ==================================================================================================================== */
-
-// init gamma table for correcting color values
-PixelNode_Driver_PixelPusher.prototype.initGammaTable = function() {
-	var self = this;
-
-	// thanks PhilB for this gamma table!
-	// it helps convert RGB colors to what humans see
-	for (i=0; i<256; i++) {
-	  var x = i;
-	  x = x / 255;
-	  x = Math.pow(x, self.options.gammapow);
-	  x = x * 255;
-	    
-	  self.gammatable[i] = Math.round(x);      
+// tells DMX client to write pixels
+PixelNode_Driver_DMX.prototype.sendPixels = function() {
+	for (var i = this.options.startUniverse; i < this.options.universes; i++) {
+		if (this.sender[i] && this.sender[i].socket_ready) {
+			this.sender[i].transmit();
+		}
 	}
-
 }
-
